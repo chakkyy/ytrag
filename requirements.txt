@@ -1,0 +1,7 @@
+# ytrag Dependencies
+# Synced with pyproject.toml
+
+# Core dependencies
+yt-dlp>=2024.1.1
+typer>=0.9.0
+rich>=13.0.0

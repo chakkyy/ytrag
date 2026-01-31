@@ -1,0 +1,42 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Test and coverage
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+
+# PyInstaller
+build/
+dist/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment variables
+.env
+.env.local
+
+# Eggs
+*.egg
+*.egg-info/
+
+# Editor/Tool settings
+.claude/
+
+# Internal docs
+docs/plans/

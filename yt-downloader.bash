@@ -1,0 +1,1 @@
+yt-dlp --sleep-requests 3 --min-sleep-interval 3 --max-sleep-interval 6 --write-sub --write-auto-sub --sub-lang "es,en,en-US" --skip-download -o "%(channel)s/%(upload_date)s_%(title)s.%(ext)s" "URL_DEL_CANAL"

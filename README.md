@@ -7,8 +7,8 @@ Download YouTube subtitles, clean them to markdown, and consolidate them into LL
 ## Quick Start
 
 ```bash
-# Install from GitHub
-pip install git+https://github.com/chakkyy/ytrag.git
+# Install from PyPI
+pipx install ytrag
 
 # Download and process a YouTube channel
 ytrag all "https://youtube.com/@ChannelName"
@@ -18,24 +18,24 @@ That's it! The transcripts will be cleaned and organized into volumes ready for 
 
 ## Installation
 
-### From GitHub (recommended)
+### With pipx (recommended)
 
 ```bash
-pip install git+https://github.com/chakkyy/ytrag.git
+pipx install ytrag
+```
+
+### With pip
+
+```bash
+pip install ytrag
 ```
 
 ### From Source
 
 ```bash
 git clone https://github.com/chakkyy/ytrag.git
-cd yt-scraper
+cd ytrag
 pip install .
-```
-
-### With pipx (isolated environment)
-
-```bash
-pipx install git+https://github.com/chakkyy/ytrag.git
 ```
 
 ## Usage

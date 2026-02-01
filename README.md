@@ -86,6 +86,45 @@ ytrag status
 
 # Show version
 ytrag --version
+
+# Show all commands and options
+ytrag --help
+```
+
+### Programmatic Usage
+
+You can also use ytrag as a Python library:
+
+```python
+from pathlib import Path
+from ytrag.downloader import Downloader
+from ytrag.utils import create_subtitle_callback
+
+# Setup output directory
+output_dir = Path("./transcripts")
+
+# Create callback to clean subtitles as they download
+callback = create_subtitle_callback(output_dir, verbose=True)
+
+# Initialize downloader
+downloader = Downloader(output_dir, on_subtitle_downloaded=callback)
+
+# Download subtitles
+stats = downloader.download("https://youtube.com/@ChannelName", langs=["en", "es"])
+print(f"Downloaded: {stats['downloaded']}, Errors: {stats['errors']}")
+```
+
+For consolidation:
+
+```python
+from ytrag.consolidator import consolidate_all
+
+# Consolidate cleaned transcripts into volumes
+manifest = consolidate_all(
+    base_dir=".",  # Directory containing _biblioteca/
+    transcripts_per_volume=100
+)
+print(f"Processed channels: {list(manifest['channels'].keys())}")
 ```
 
 ## Output Structure

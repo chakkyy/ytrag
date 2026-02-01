@@ -13,6 +13,24 @@ EXPORTS_FOLDER = "_exports"
 ARCHIVE_FILE = ".ytrag_archive.txt"
 
 
+def is_valid_youtube_url(url: str) -> bool:
+    """
+    Validate URL is a YouTube URL.
+
+    Matches:
+    - youtube.com (with or without www/m prefix)
+    - youtu.be (short URLs)
+    """
+    youtube_pattern = re.compile(
+        r'^https?://'
+        r'(www\.|m\.)?'
+        r'(youtube\.com|youtu\.be)'
+        r'/.*$',
+        re.IGNORECASE
+    )
+    return bool(youtube_pattern.match(url))
+
+
 def get_output_paths(base_dir: Path) -> dict:
     """Get standard output paths for ytrag."""
     return {

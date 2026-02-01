@@ -5,6 +5,7 @@ description = "YouTube transcripts to RAG-ready volumes"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
+authors = [{ name = "chakkyy" }]
 keywords = ["youtube", "transcripts", "rag", "llm", "subtitles"]
 
 dependencies = [

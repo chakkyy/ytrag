@@ -48,6 +48,8 @@ def ensure_dir(path: Path) -> Path:
 
 def sanitize_filename(name: str) -> str:
     """Remove or replace invalid filename characters."""
+    # Prevent path traversal
+    name = name.replace('..', '_')
     # Replace problematic characters
     name = name.replace('/', '⧸').replace('\\', '⧸')
     name = name.replace(':', '：').replace('|', '｜')

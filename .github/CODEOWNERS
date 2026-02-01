@@ -1,0 +1,7 @@
+# CODEOWNERS - Require review for sensitive files
+
+# Workflow changes require owner review
+/.github/workflows/ @chakky   
+
+# Build configuration requires owner review
+/pyproject.toml @chakky

@@ -7,7 +7,7 @@ from typing import Optional, Callable
 import yt_dlp
 
 from ytrag.rate_limiter import AdaptiveRateLimiter
-from ytrag.utils import ARCHIVE_FILE, ensure_dir
+from ytrag.utils import ARCHIVE_FILE, ensure_dir, is_valid_youtube_url
 
 
 def get_ydl_options(
@@ -95,6 +95,9 @@ class Downloader:
 
     def get_channel_info(self, url: str) -> dict:
         """Get channel/playlist info without downloading."""
+        if not is_valid_youtube_url(url):
+            raise ValueError(f"Invalid YouTube URL: {url}")
+
         opts = {
             'quiet': True,
             'no_warnings': True,
@@ -111,6 +114,9 @@ class Downloader:
 
     def download(self, url: str, langs: Optional[list[str]] = None) -> dict:
         """Download subtitles from URL."""
+        if not is_valid_youtube_url(url):
+            raise ValueError(f"Invalid YouTube URL: {url}")
+
         progress_hooks = [self._create_progress_hook()]
         opts = get_ydl_options(
             output_dir=str(self.output_dir),

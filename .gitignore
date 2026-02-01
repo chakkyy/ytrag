@@ -40,3 +40,23 @@ dist/
 
 # Internal docs
 docs/plans/
+
+# Security - private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# Security - secrets files
+secrets.json
+secrets.yaml
+secrets.yml
+.secrets
+*.secret
+
+# Downloaded content (potentially large)
+downloads/
+transcripts/
+ytrag/__pycache__

@@ -4,13 +4,8 @@ import os
 import re
 from pathlib import Path
 
-# Folders to ignore when scanning
-IGNORE_FOLDERS = {'__pycache__', '.git', '.vscode', 'venv', 'env', '_biblioteca', '_exports'}
-
-# Output folder names
-BIBLIOTECA_FOLDER = "_biblioteca"
-EXPORTS_FOLDER = "_exports"
-ARCHIVE_FILE = ".ytrag_archive.txt"
+# Archive file to track processed videos
+ARCHIVE_FILE = ".ytrag_archive"
 
 
 def is_valid_youtube_url(url: str) -> bool:
@@ -29,15 +24,6 @@ def is_valid_youtube_url(url: str) -> bool:
         re.IGNORECASE
     )
     return bool(youtube_pattern.match(url))
-
-
-def get_output_paths(base_dir: Path) -> dict:
-    """Get standard output paths for ytrag."""
-    return {
-        'biblioteca': base_dir / BIBLIOTECA_FOLDER,
-        'exports': base_dir / EXPORTS_FOLDER,
-        'archive': base_dir / ARCHIVE_FILE,
-    }
 
 
 def ensure_dir(path: Path) -> Path:
@@ -89,54 +75,3 @@ def get_language_from_filename(filename: str) -> str:
     if '.es.' in name or '_es.' in name:
         return 'ES'
     return 'ES'  # Default
-
-
-def get_output_filename(base_name: str, language: str) -> str:
-    """Get consistent output filename for markdown files."""
-    return f"{base_name} [{language}].md"
-
-
-def create_subtitle_callback(
-    output_dir: Path,
-    verbose: bool = False,
-    console=None
-):
-    """
-    Create a callback for processing downloaded subtitle files.
-    
-    Args:
-        output_dir: Base output directory
-        verbose: If True, print progress messages
-        console: Rich Console instance for output (required if verbose)
-    
-    Returns:
-        Callback function that processes VTT files to markdown
-    """
-    # Import here to avoid circular imports
-    from ytrag.cleaner import clean_vtt_content, create_markdown_output, get_file_info
-    
-    def on_subtitle_downloaded(path: Path):
-        try:
-            content = path.read_text(encoding='utf-8', errors='ignore')
-            cleaned = clean_vtt_content(content)
-            if cleaned:
-                base_name, language = get_file_info(path.name)
-                channel = path.parent.name
-                biblioteca_dir = ensure_dir(output_dir / BIBLIOTECA_FOLDER / channel)
-                output_file = biblioteca_dir / get_output_filename(base_name, language)
-                markdown = create_markdown_output(
-                    content=cleaned,
-                    base_name=base_name,
-                    language=language,
-                    source_file=path.name,
-                    channel=channel,
-                )
-                output_file.write_text(markdown, encoding='utf-8')
-                if verbose and console:
-                    console.print(f"  Cleaned: {output_file.name}")
-        except Exception as e:
-            if verbose and console:
-                console.print(f"  [yellow]Warning:[/] Error cleaning {path.name}: {e}")
-    
-    return on_subtitle_downloaded
-

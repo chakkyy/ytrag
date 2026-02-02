@@ -3,102 +3,156 @@
 
 import pytest
 import json
-import tempfile
-import shutil
 from pathlib import Path
+import tempfile
+
 from ytrag.consolidator import (
-    validate_markdown_file,
-    extract_title,
-    consolidate_channel,
-    consolidate_all,
+    format_transcript,
+    create_volumes,
+    write_manifest,
 )
 
 
-class TestValidateMarkdownFile:
-    """Tests for markdown validation."""
-
-    def test_valid_markdown(self):
-        """Should return True for valid markdown."""
-        content = "# Title\n**Idioma:** EN\n---\nContent"
-        assert validate_markdown_file(content) is True
-
-    def test_invalid_no_header(self):
-        """Should return False for missing header."""
-        content = "Just some text without header"
-        assert validate_markdown_file(content) is False
-
-    def test_empty_content(self):
-        """Should return False for empty content."""
-        assert validate_markdown_file("") is False
+def make_transcript(base_name: str, content: str = "Test content") -> dict:
+    """Helper to create transcript dict."""
+    return {
+        'base_name': base_name,
+        'language': 'EN',
+        'content': content,
+        'source_file': f"{base_name}.en.vtt",
+        'channel': 'Test Channel',
+    }
 
 
-class TestExtractTitle:
-    """Tests for title extraction."""
+class TestFormatTranscript:
+    """Tests for transcript formatting."""
 
-    def test_extracts_title(self):
-        """Should extract title from markdown."""
-        content = "# My Video Title\n**Idioma:** EN"
-        assert extract_title(content) == "My Video Title"
+    def test_formats_with_all_fields(self):
+        """Should include all metadata fields."""
+        transcript = make_transcript("20240101_Test Video")
+        result = format_transcript(transcript)
 
-    def test_handles_date_prefix(self):
-        """Should include date in title."""
-        content = "# 20230101_Video Title\n---"
-        assert "20230101" in extract_title(content)
+        assert "# 20240101_Test Video" in result
+        assert "**Idioma:** EN" in result
+        assert "**Canal:** Test Channel" in result
+        assert "**Fuente:** 20240101_Test Video.en.vtt" in result
+        assert "Test content" in result
 
 
-class TestConsolidateChannel:
-    """Tests for channel consolidation."""
+class TestCreateVolumes:
+    """Tests for volume creation."""
 
-    @pytest.fixture
-    def temp_biblioteca(self):
-        """Create temp biblioteca with markdown files."""
-        temp = tempfile.mkdtemp()
+    def test_creates_single_volume(self):
+        """Should create single volume for small batch."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            transcripts = [make_transcript(f"video{i}") for i in range(5)]
 
-        biblioteca = Path(temp) / "_biblioteca" / "TestChannel"
-        biblioteca.mkdir(parents=True)
+            stats = create_volumes(
+                transcripts=transcripts,
+                output_dir=output_dir,
+                channel_name="TestChannel",
+                transcripts_per_volume=100,
+            )
 
-        # Create 15 markdown files
-        for i in range(15):
-            content = f"""# 2023{i+1:02d}01_Video {i+1}
-**Idioma:** EN
-**Fuente:** video{i+1}.vtt
----
+            assert stats['total'] == 5
+            assert len(stats['volumes']) == 1
+            assert (output_dir / "TestChannel_Vol01.txt").exists()
 
-This is content for video {i+1}.
-"""
-            (biblioteca / f"2023{i+1:02d}01_Video {i+1} [EN].md").write_text(content)
+    def test_creates_multiple_volumes(self):
+        """Should split into multiple volumes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            transcripts = [make_transcript(f"video{i}") for i in range(25)]
 
-        yield temp
-        shutil.rmtree(temp)
+            stats = create_volumes(
+                transcripts=transcripts,
+                output_dir=output_dir,
+                channel_name="TestChannel",
+                transcripts_per_volume=10,
+            )
 
-    def test_creates_exports_folder(self, temp_biblioteca):
-        """Should create _exports folder."""
-        consolidate_all(temp_biblioteca)
-        exports = Path(temp_biblioteca) / "_exports"
-        assert exports.exists()
+            assert stats['total'] == 25
+            assert len(stats['volumes']) == 3
+            assert (output_dir / "TestChannel_Vol01.txt").exists()
+            assert (output_dir / "TestChannel_Vol02.txt").exists()
+            assert (output_dir / "TestChannel_Vol03.txt").exists()
 
-    def test_creates_volume_files(self, temp_biblioteca):
-        """Should create volume txt files."""
-        consolidate_all(temp_biblioteca)
-        exports = Path(temp_biblioteca) / "_exports"
-        txt_files = list(exports.glob("*.txt"))
-        assert len(txt_files) >= 1
+    def test_volume_has_header(self):
+        """Should include volume header."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            transcripts = [make_transcript("video1")]
 
-    def test_creates_manifest(self, temp_biblioteca):
-        """Should create manifest.json."""
-        consolidate_all(temp_biblioteca)
-        manifest = Path(temp_biblioteca) / "_exports" / "manifest.json"
-        assert manifest.exists()
+            create_volumes(
+                transcripts=transcripts,
+                output_dir=output_dir,
+                channel_name="TestChannel",
+            )
 
-        data = json.loads(manifest.read_text())
-        assert "generated_at" in data
-        assert "channels" in data
+            content = (output_dir / "TestChannel_Vol01.txt").read_text()
+            assert "=== COLECCIÓN: TestChannel ===" in content
+            assert "=== VOLUMEN: 1 de 1 ===" in content
 
-    def test_volume_has_index(self, temp_biblioteca):
-        """Should include index at end of volume."""
-        consolidate_all(temp_biblioteca)
-        exports = Path(temp_biblioteca) / "_exports"
-        txt_file = list(exports.glob("*.txt"))[0]
-        content = txt_file.read_text()
+    def test_volume_has_index(self):
+        """Should include index at end."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            transcripts = [
+                make_transcript("20240101_First"),
+                make_transcript("20240102_Second"),
+            ]
 
-        assert "ÍNDICE" in content
+            create_volumes(
+                transcripts=transcripts,
+                output_dir=output_dir,
+                channel_name="TestChannel",
+            )
+
+            content = (output_dir / "TestChannel_Vol01.txt").read_text()
+            assert "=== ÍNDICE DE ESTE VOLUMEN ===" in content
+            assert "1. 20240101_First" in content
+            assert "2. 20240102_Second" in content
+
+    def test_handles_empty_transcripts(self):
+        """Should handle empty transcript list."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+
+            stats = create_volumes(
+                transcripts=[],
+                output_dir=output_dir,
+                channel_name="TestChannel",
+            )
+
+            assert stats['total'] == 0
+            assert stats['volumes'] == []
+
+
+class TestWriteManifest:
+    """Tests for manifest writing."""
+
+    def test_writes_manifest_json(self):
+        """Should write valid JSON manifest."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            stats = {'total': 10, 'volumes': ['Vol01.txt', 'Vol02.txt'], 'skipped': []}
+
+            manifest_path = write_manifest(output_dir, "TestChannel", stats)
+
+            assert manifest_path.exists()
+            data = json.loads(manifest_path.read_text())
+            assert data['channel'] == "TestChannel"
+            assert data['total_transcripts'] == 10
+            assert len(data['volumes']) == 2
+
+    def test_manifest_has_timestamp(self):
+        """Should include generation timestamp."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            stats = {'total': 5, 'volumes': ['Vol01.txt'], 'skipped': []}
+
+            manifest_path = write_manifest(output_dir, "TestChannel", stats)
+
+            data = json.loads(manifest_path.read_text())
+            assert 'generated_at' in data

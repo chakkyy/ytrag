@@ -59,4 +59,3 @@ secrets.yml
 # Downloaded content (potentially large)
 downloads/
 transcripts/
-ytrag/__pycache__

@@ -1,6 +1,7 @@
 # ytrag/main.py
 """ytrag CLI - YouTube transcripts to RAG-ready volumes."""
 
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -11,9 +12,9 @@ from rich.panel import Panel
 
 from ytrag import __version__
 from ytrag.downloader import Downloader
-from ytrag.cleaner import process_directory
-from ytrag.consolidator import consolidate_all
-from ytrag.utils import create_subtitle_callback
+from ytrag.cleaner import process_vtt_directory
+from ytrag.consolidator import create_volumes, write_manifest
+from ytrag.utils import ARCHIVE_FILE, ensure_dir
 
 app = typer.Typer(
     name="ytrag",
@@ -43,120 +44,24 @@ def main(
     pass
 
 
-@app.command()
-def download(
-    url: str = typer.Argument(..., help="YouTube URL (video, playlist, or channel)"),
-    output: Path = typer.Option(".", "--output", "-o", help="Output directory"),
-    lang: str = typer.Option("es,en", "--lang", "-l", help="Subtitle languages (comma-separated)"),
-    verbose: bool = typer.Option(False, "--verbose", help="Show detailed output"),
-):
-    """Download subtitles from YouTube."""
-    output = Path(output).resolve()
-    langs = [l.strip() for l in lang.split(",")]
-
-    console.print(Panel.fit(
-        f"[bold blue]ytrag[/] v{__version__}\nDownloading subtitles from: {url}",
-        title="Download",
-    ))
-
-    # Use extracted callback factory
-    on_subtitle_downloaded = create_subtitle_callback(
-        output_dir=output,
-        verbose=verbose,
-        console=console
-    )
-
-    downloader = Downloader(output_dir=output, on_subtitle_downloaded=on_subtitle_downloaded)
-
-    with console.status("[bold green]Connecting to YouTube..."):
-        try:
-            info = downloader.get_channel_info(url)
-        except Exception as e:
-            console.print(f"[red]Error:[/] Could not fetch info: {e}")
-            raise typer.Exit(1)
-
-    console.print(f"  Channel: {info['channel']}")
-    console.print(f"  Videos: {info['video_count']}")
-
-    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
-                  BarColumn(), TaskProgressColumn(), console=console) as progress:
-        task = progress.add_task("Downloading...", total=None)
-        stats = downloader.download(url, langs=langs)
-
-    console.print("\n[green]Download complete![/]")
-    console.print(f"  Output: {output}")
-
-
-@app.command()
-def clean(
-    directory: Path = typer.Argument(".", help="Directory containing VTT files"),
-):
-    """Clean VTT files to markdown."""
-    directory = Path(directory).resolve()
-
-    console.print(Panel.fit(
-        f"[bold blue]ytrag[/] v{__version__}\nCleaning VTT files in: {directory}",
-        title="Clean",
-    ))
-
-    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
-                  console=console) as progress:
-        task = progress.add_task("Processing VTT files...", total=None)
-        stats = process_directory(directory)
-
-    console.print("\n[green]Cleaning complete![/]")
-    console.print(f"  Processed: {stats['processed']}")
-    console.print(f"  Skipped: {stats['skipped']}")
-    if stats['errors']:
-        console.print(f"  [yellow]Errors: {stats['errors']}[/]")
-
-
-@app.command()
-def consolidate(
-    directory: Path = typer.Argument(".", help="Directory containing _biblioteca/"),
-    per_volume: int = typer.Option(100, "--per-volume", "-n", help="Transcripts per volume"),
-):
-    """Consolidate markdown files into volumes."""
-    directory = Path(directory).resolve()
-
-    console.print(Panel.fit(
-        f"[bold blue]ytrag[/] v{__version__}\nConsolidating: {directory}",
-        title="Consolidate",
-    ))
-
-    manifest = consolidate_all(directory, transcripts_per_volume=per_volume)
-
-    console.print("\n[green]Consolidation complete![/]")
-    for channel, data in manifest.get('channels', {}).items():
-        console.print(f"  {channel}: {data['total_transcripciones']} -> {len(data['volumenes'])} volumes")
-    console.print(f"\n  Output: {directory}/_exports/")
-
-
 @app.command(name="all")
 def all_pipeline(
     url: str = typer.Argument(..., help="YouTube URL"),
     output: Path = typer.Option(".", "--output", "-o", help="Output directory"),
-    lang: str = typer.Option("es,en", "--lang", "-l", help="Subtitle languages"),
+    lang: Optional[str] = typer.Option(None, "--lang", "-l", help="Subtitle languages. Defaults to video's language."),
     per_volume: int = typer.Option(100, "--per-volume", "-n", help="Transcripts per volume"),
 ):
-    """Full pipeline: download -> clean -> consolidate."""
+    """Download YouTube transcripts and create RAG-ready volumes."""
     output = Path(output).resolve()
-    langs = [l.strip() for l in lang.split(",")]
 
     console.print(Panel.fit(
-        f"[bold blue]ytrag[/] v{__version__}\nFull pipeline for: {url}",
+        f"[bold blue]ytrag[/] v{__version__}\n{url}",
         title="ytrag",
     ))
 
-    # Use extracted callback factory (non-verbose for pipeline)
-    on_subtitle_downloaded = create_subtitle_callback(
-        output_dir=output,
-        verbose=False,
-        console=None
-    )
+    downloader = Downloader(output_dir=output)
 
-    downloader = Downloader(output_dir=output, on_subtitle_downloaded=on_subtitle_downloaded)
-
+    # Get channel info
     with console.status("[bold green]Connecting to YouTube..."):
         try:
             info = downloader.get_channel_info(url)
@@ -164,45 +69,96 @@ def all_pipeline(
             console.print(f"[red]Error:[/] Could not fetch info: {e}")
             raise typer.Exit(1)
 
-    console.print(f"  Channel: {info['channel']}")
+    channel_name = info['channel']
+
+    # Determine languages
+    if lang:
+        langs = [l.strip() for l in lang.split(",")]
+    else:
+        default_lang = info.get('default_language') or 'en'
+        langs = [default_lang]
+        console.print(f"  [dim]Language: {default_lang}[/]")
+
+    console.print(f"  Channel: {channel_name}")
     console.print(f"  Videos: {info['video_count']}")
 
+    # Create channel output directory
+    channel_dir = ensure_dir(output / channel_name)
+    archive_path = channel_dir / ARCHIVE_FILE
+
+    # Download to temp directory
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
                   BarColumn(), TaskProgressColumn(), console=console) as progress:
-        task = progress.add_task("Downloading...", total=None)
-        stats = downloader.download(url, langs=langs)
+        task = progress.add_task("Downloading subtitles...", total=None)
+        temp_dir, download_stats = downloader.download_to_temp(
+            url, langs=langs, archive_path=archive_path
+        )
 
-    console.print("\n[green]Download complete![/]")
+    try:
+        # Process VTT files
+        with console.status("[bold green]Processing transcripts..."):
+            transcripts = process_vtt_directory(temp_dir, channel_name)
 
-    # Run consolidate
-    manifest = consolidate_all(output, transcripts_per_volume=per_volume)
+        if not transcripts:
+            console.print("\n[yellow]No new transcripts to process.[/]")
+            raise typer.Exit(0)
 
-    console.print("\n[green]Consolidation complete![/]")
-    for channel, data in manifest.get('channels', {}).items():
-        console.print(f"  {channel}: {data['total_transcripciones']} -> {len(data['volumenes'])} volumes")
+        console.print(f"\n  Processed: {len(transcripts)} transcripts")
 
-    console.print("\n[bold green]Pipeline complete![/]")
+        # Create volumes
+        with console.status("[bold green]Creating volumes..."):
+            stats = create_volumes(
+                transcripts=transcripts,
+                output_dir=channel_dir,
+                channel_name=channel_name,
+                transcripts_per_volume=per_volume,
+            )
+            write_manifest(channel_dir, channel_name, stats)
+
+        console.print(f"  Volumes: {len(stats['volumes'])}")
+        console.print(f"\n[bold green]Done![/] Output: {channel_dir}")
+
+    finally:
+        # Clean up temp directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @app.command()
 def status(
     directory: Path = typer.Argument(".", help="Directory to check"),
 ):
-    """Show status of current directory."""
+    """Show status of ytrag output."""
     directory = Path(directory).resolve()
 
-    vtt_count = len(list(directory.rglob("*.vtt")))
-    biblioteca = directory / "_biblioteca"
-    md_count = len(list(biblioteca.rglob("*.md"))) if biblioteca.exists() else 0
-    exports = directory / "_exports"
-    vol_count = len(list(exports.glob("*.txt"))) if exports.exists() else 0
+    # Find channel folders (folders with volumes)
+    channels = []
+    for item in directory.iterdir():
+        if item.is_dir():
+            volumes = list(item.glob("*_Vol*.txt"))
+            manifest = item / "manifest.json"
+            if volumes or manifest.exists():
+                channels.append({
+                    'name': item.name,
+                    'volumes': len(volumes),
+                    'has_manifest': manifest.exists(),
+                })
+
+    if not channels:
+        console.print(Panel.fit(
+            f"[bold blue]ytrag[/] Status\n\n"
+            f"Directory: {directory}\n\n"
+            f"No ytrag output found.",
+            title="Status",
+        ))
+        return
+
+    status_lines = [f"Directory: {directory}\n"]
+    for ch in channels:
+        status_lines.append(f"\n{ch['name']}:")
+        status_lines.append(f"  Volumes: {ch['volumes']}")
 
     console.print(Panel.fit(
-        f"[bold blue]ytrag[/] Status\n\n"
-        f"Directory: {directory}\n\n"
-        f"VTT files: {vtt_count}\n"
-        f"Cleaned (markdown): {md_count}\n"
-        f"Volumes: {vol_count}",
+        f"[bold blue]ytrag[/] Status\n\n" + "\n".join(status_lines),
         title="Status",
     ))
 

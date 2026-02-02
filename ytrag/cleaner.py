@@ -1,31 +1,13 @@
 """VTT cleaner module for converting subtitles to clean, readable text."""
 
-import logging
-import os
 import re
-from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
-
-
-class ProcessResult(Enum):
-    """Result of processing a single VTT file."""
-    SUCCESS = "success"
-    SKIPPED_DUPLICATE = "skipped_duplicate"
-    SKIPPED_REGIONAL = "skipped_regional"
-    SKIPPED_EMPTY = "skipped_empty"
-    ERROR = "error"
-
-
-logger = logging.getLogger(__name__)
+from typing import Optional
 
 from ytrag.utils import (
-    IGNORE_FOLDERS,
-    BIBLIOTECA_FOLDER,
-    ensure_dir,
+    extract_base_name,
     is_regional_variant,
     get_language_from_filename,
-    extract_base_name,
 )
 
 # Useless markers to filter (case-insensitive)
@@ -45,15 +27,7 @@ RE_MULTIPLE_SPACES = re.compile(r'\s+')
 
 
 def parse_vtt_timestamp(timestamp: str) -> Optional[float]:
-    """
-    Convert VTT timestamp (HH:MM:SS.mmm) to seconds.
-
-    Args:
-        timestamp: Timestamp string in HH:MM:SS.mmm format
-
-    Returns:
-        Float seconds, or None if parsing fails
-    """
+    """Convert VTT timestamp (HH:MM:SS.mmm) to seconds."""
     if not timestamp:
         return None
     try:
@@ -69,15 +43,7 @@ def parse_vtt_timestamp(timestamp: str) -> Optional[float]:
 
 
 def capitalize_sentences(text: str) -> str:
-    """
-    Capitalize the first letter after sentence-ending punctuation and at the start.
-
-    Args:
-        text: Input text to capitalize
-
-    Returns:
-        Text with properly capitalized sentences
-    """
+    """Capitalize the first letter after sentence-ending punctuation and at the start."""
     if not text:
         return text
 
@@ -106,13 +72,6 @@ def clean_vtt_content(content: str, pause_threshold: float = 2.5) -> str:
     Clean VTT content and convert it to coherent paragraphs.
 
     Uses pauses between timestamps to detect paragraph breaks.
-
-    Args:
-        content: Raw VTT file content
-        pause_threshold: Seconds of pause to trigger paragraph break
-
-    Returns:
-        Cleaned text with proper paragraphs
     """
     if not content:
         return ""
@@ -148,7 +107,6 @@ def clean_vtt_content(content: str, pause_threshold: float = 2.5) -> str:
             if current_end_time is not None and start_time is not None:
                 pause = start_time - current_end_time
                 if pause >= pause_threshold and current_block_text:
-                    # Save current block and start new paragraph
                     blocks.append({
                         'text': current_block_text.copy(),
                         'is_new_paragraph': True
@@ -161,13 +119,8 @@ def clean_vtt_content(content: str, pause_threshold: float = 2.5) -> str:
             continue
 
         # Process text line
-        # Remove position attributes that sometimes remain on the line
         line = RE_POSITION_ATTRS.sub('', line).strip()
-
-        # Remove inline timestamps like <00:00:01.000>
         line = RE_INLINE_TIMESTAMP.sub('', line)
-
-        # Remove HTML tags
         plain_text = RE_HTML_TAGS.sub('', line)
 
         # Replace HTML entities
@@ -212,13 +165,8 @@ def clean_vtt_content(content: str, pause_threshold: float = 2.5) -> str:
     for block in blocks:
         if not block['text']:
             continue
-
-        # Join all lines of the block into a paragraph
         paragraph = ' '.join(block['text'])
-
-        # Clean multiple spaces
         paragraph = RE_MULTIPLE_SPACES.sub(' ', paragraph).strip()
-
         if paragraph:
             paragraphs.append(paragraph)
 
@@ -231,252 +179,67 @@ def clean_vtt_content(content: str, pause_threshold: float = 2.5) -> str:
     return final_text
 
 
-def select_best_subtitle_file(files: list[str], base_name: str) -> Optional[str]:
+def process_vtt_file(vtt_path: Path, channel_name: str) -> Optional[dict]:
     """
-    Select the best subtitle file from a list of candidates.
-
-    Prefers non-regional variants (e.g., .en.vtt over .en-US.vtt).
-
-    Args:
-        files: List of subtitle filenames
-        base_name: Base name of the video file
+    Process a single VTT file and return cleaned content.
 
     Returns:
-        Best matching filename, or None if no match
-    """
-    matching_files = [f for f in files if f.startswith(base_name)]
-
-    if not matching_files:
-        return None
-
-    # Prefer non-regional variant
-    for f in matching_files:
-        # Check if it's a simple language code (e.g., .en.vtt) not regional (e.g., .en-US.vtt)
-        if re.search(r'\.[a-z]{2}\.vtt$', f, re.IGNORECASE):
-            return f
-
-    # Return any matching file if no non-regional found
-    return matching_files[0]
-
-
-def get_file_info(filename: str) -> tuple[str, str]:
-    """
-    Extract base name and language from subtitle filename.
-
-    Args:
-        filename: Subtitle filename
-
-    Returns:
-        Tuple of (base_name, language_code)
-    """
-    language = "ES"
-    if ".en." in filename.lower() or "_en." in filename.lower():
-        language = "EN"
-    elif ".es." in filename.lower() or "_es." in filename.lower():
-        language = "ES"
-
-    # Remove double extension (e.g., .en.vtt -> base)
-    base_name = os.path.splitext(os.path.splitext(filename)[0])[0]
-
-    return base_name, language
-
-
-def create_markdown_output(
-    content: str,
-    base_name: str,
-    language: str,
-    source_file: str,
-    channel: Optional[str] = None
-) -> str:
-    """
-    Create markdown-formatted output from cleaned content.
-
-    Args:
-        content: Cleaned transcript text
-        base_name: Video base name (used as title)
-        language: Language code (EN, ES, etc.)
-        source_file: Original subtitle filename
-        channel: Optional channel name
-
-    Returns:
-        Markdown-formatted string
-    """
-    lines = [
-        f"# {base_name}",
-        f"**Idioma:** {language}",
-        f"**Fuente:** {source_file}",
-    ]
-
-    if channel:
-        lines.insert(2, f"**Canal:** {channel}")
-
-    lines.append("---\n")
-    lines.append(content)
-
-    return '\n'.join(lines)
-
-
-def process_single_file(
-    vtt_path: Path,
-    output_dir: Path,
-    channel_name: str,
-    processed_bases: set[str]
-) -> tuple[Optional[str], ProcessResult]:
-    """
-    Process a single VTT file and write markdown output.
-
-    Args:
-        vtt_path: Path to the VTT file
-        output_dir: Directory to write markdown output
-        channel_name: Name of the channel (folder name)
-        processed_bases: Set of already processed base names (for deduplication)
-
-    Returns:
-        Tuple of (output_path, result_type). output_path is None if not processed.
+        Dict with keys: base_name, language, content, source_file
+        Or None if processing failed or content is empty.
     """
     try:
         filename = vtt_path.name
         base_name = extract_base_name(filename)
+        language = get_language_from_filename(filename)
 
-        # Skip if we already processed this base (deduplication)
-        if base_name in processed_bases:
-            return None, ProcessResult.SKIPPED_DUPLICATE
-
-        # Skip regional variant if non-regional exists
-        if is_regional_variant(filename):
-            # Check if non-regional version exists in same directory
-            non_regional_patterns = [
-                vtt_path.parent / f"{base_name}.en.vtt",
-                vtt_path.parent / f"{base_name}.es.vtt",
-            ]
-            for pattern in non_regional_patterns:
-                if pattern.exists():
-                    return None, ProcessResult.SKIPPED_REGIONAL
-
-        # Read and clean VTT content
-        content = vtt_path.read_text(encoding='utf-8')
+        content = vtt_path.read_text(encoding='utf-8', errors='ignore')
         cleaned = clean_vtt_content(content)
 
         if not cleaned.strip():
-            return None, ProcessResult.SKIPPED_EMPTY
+            return None
 
-        # Get language from filename
-        language = get_language_from_filename(filename)
-
-        # Create markdown output
-        markdown = create_markdown_output(
-            content=cleaned,
-            base_name=base_name,
-            language=language,
-            source_file=filename,
-            channel=channel_name
-        )
-
-        # Ensure output directory exists
-        channel_output_dir = ensure_dir(output_dir / channel_name)
-
-        # Write output file
-        output_path = channel_output_dir / f"{base_name} [{language}].md"
-        output_path.write_text(markdown, encoding='utf-8')
-
-        # Mark as processed
-        processed_bases.add(base_name)
-
-        return str(output_path), ProcessResult.SUCCESS
-
-    except Exception as e:
-        logger.warning(f"Error processing {vtt_path}: {e}")
-        return None, ProcessResult.ERROR
+        return {
+            'base_name': base_name,
+            'language': language,
+            'content': cleaned,
+            'source_file': filename,
+            'channel': channel_name,
+        }
+    except Exception:
+        return None
 
 
-def process_directory(
-    base_dir: str | Path,
-    progress: Any = None,
-    task_id: Any = None
-) -> dict:
+def process_vtt_directory(temp_dir: Path, channel_name: str) -> list[dict]:
     """
-    Process all VTT files in a directory tree.
+    Process all VTT files in a directory.
 
-    Walks the directory tree, finds VTT files, cleans them, and writes
-    markdown output to _biblioteca/{channel}/ folders.
-
-    Args:
-        base_dir: Base directory to scan
-        progress: Optional Rich Progress instance for progress tracking
-        task_id: Optional task ID for progress updates
-
-    Returns:
-        Dictionary with stats: {'processed': int, 'skipped': int, 'errors': int}
+    Returns list of processed transcript dicts, sorted by base_name.
+    Handles deduplication (prefers non-regional variants).
     """
-    base_path = Path(base_dir)
-    biblioteca_path = ensure_dir(base_path / BIBLIOTECA_FOLDER)
+    vtt_files = list(temp_dir.glob('*.vtt'))
 
-    stats = {'processed': 0, 'skipped': 0, 'errors': 0}
+    # Sort to process non-regional variants first
+    def sort_key(f: Path) -> tuple[int, str]:
+        return (1 if is_regional_variant(f.name) else 0, f.name)
 
-    # Collect all VTT files grouped by channel
-    channel_files: dict[str, list[Path]] = {}
+    vtt_files.sort(key=sort_key)
 
-    for root, dirs, files in os.walk(base_path):
-        # Filter out ignored folders
-        dirs[:] = [d for d in dirs if d not in IGNORE_FOLDERS]
+    processed_bases: set[str] = set()
+    results: list[dict] = []
 
-        root_path = Path(root)
+    for vtt_file in vtt_files:
+        base_name = extract_base_name(vtt_file.name)
 
-        # Skip if we're inside _biblioteca
-        if BIBLIOTECA_FOLDER in root_path.parts:
+        # Skip if already processed (deduplication)
+        if base_name in processed_bases:
             continue
 
-        # Determine channel name (parent folder of VTT files)
-        # The channel is the immediate parent of the VTT files
-        if root_path == base_path:
-            continue  # Skip root level files
+        result = process_vtt_file(vtt_file, channel_name)
+        if result:
+            results.append(result)
+            processed_bases.add(base_name)
 
-        channel_name = root_path.name
+    # Sort by base_name (which typically starts with date)
+    results.sort(key=lambda x: x['base_name'])
 
-        # Collect VTT files
-        vtt_files = [root_path / f for f in files if f.lower().endswith('.vtt')]
-
-        if vtt_files:
-            if channel_name not in channel_files:
-                channel_files[channel_name] = []
-            channel_files[channel_name].extend(vtt_files)
-
-    # Process files by channel
-    total_files = sum(len(files) for files in channel_files.values())
-
-    if progress and task_id is not None:
-        progress.update(task_id, total=total_files)
-
-    processed_count = 0
-
-    for channel_name, vtt_files in channel_files.items():
-        # Track processed base names within this channel for deduplication
-        processed_bases: set[str] = set()
-
-        # Sort files to process non-regional variants first
-        def sort_key(f: Path) -> tuple[int, str]:
-            return (1 if is_regional_variant(f.name) else 0, f.name)
-
-        vtt_files.sort(key=sort_key)
-
-        # Process files sequentially (shared state for deduplication)
-        for vtt_file in vtt_files:
-            output_path, result_type = process_single_file(
-                vtt_path=vtt_file,
-                output_dir=biblioteca_path,
-                channel_name=channel_name,
-                processed_bases=processed_bases
-            )
-
-            if result_type == ProcessResult.SUCCESS:
-                stats['processed'] += 1
-            elif result_type == ProcessResult.ERROR:
-                stats['errors'] += 1
-            else:
-                stats['skipped'] += 1
-
-            processed_count += 1
-            if progress and task_id is not None:
-                progress.update(task_id, completed=processed_count)
-
-    return stats
+    return results

@@ -1,7 +1,8 @@
 # ytrag/downloader.py
 """YouTube subtitle downloader using yt-dlp."""
 
-import os
+import tempfile
+import shutil
 from pathlib import Path
 from typing import Optional, Callable
 import yt_dlp
@@ -18,7 +19,7 @@ def get_ydl_options(
 ) -> dict:
     """Get yt-dlp options configured for subtitle-only download."""
     if subtitles_langs is None:
-        subtitles_langs = ['es', 'en', 'es-ES', 'en-US']
+        subtitles_langs = ['en']  # Fallback to English if nothing specified
 
     return {
         'skip_download': True,
@@ -29,7 +30,7 @@ def get_ydl_options(
         'download_archive': archive_path,
         'sleep_interval': 1,
         'sleep_interval_requests': 1,
-        'outtmpl': f'{output_dir}/%(channel)s/%(upload_date)s_%(title)s.%(ext)s',
+        'outtmpl': f'{output_dir}/%(upload_date)s_%(title)s.%(ext)s',
         'quiet': True,
         'no_warnings': True,
         'ignoreerrors': True,
@@ -37,61 +38,17 @@ def get_ydl_options(
     }
 
 
-def select_best_subtitles(
-    subtitles: dict,
-    automatic_captions: dict,
-    preferred_langs: Optional[list[str]] = None,
-) -> Optional[tuple[str, dict]]:
-    """Select the best subtitle track from available options."""
-    if preferred_langs is None:
-        preferred_langs = ['es', 'en', 'es-ES', 'en-US']
-
-    # Try manual subtitles first
-    for lang in preferred_langs:
-        if lang in subtitles:
-            return (lang, subtitles[lang])
-
-    # Any manual subtitle
-    if subtitles:
-        first_lang = next(iter(subtitles))
-        return (first_lang, subtitles[first_lang])
-
-    # Try auto-generated
-    for lang in preferred_langs:
-        if lang in automatic_captions:
-            return (lang, automatic_captions[lang])
-
-    # Any auto subtitle
-    if automatic_captions:
-        first_lang = next(iter(automatic_captions))
-        return (first_lang, automatic_captions[first_lang])
-
-    return None
-
-
 class Downloader:
-    """YouTube subtitle downloader with adaptive rate limiting."""
+    """YouTube subtitle downloader with streaming processing."""
 
     def __init__(
         self,
         output_dir: Path,
-        on_subtitle_downloaded: Optional[Callable[[Path], None]] = None,
         rate_limiter: Optional[AdaptiveRateLimiter] = None,
     ):
         self.output_dir = Path(output_dir)
-        self.archive_path = self.output_dir / ARCHIVE_FILE
-        self.on_subtitle_downloaded = on_subtitle_downloaded
         self.rate_limiter = rate_limiter or AdaptiveRateLimiter()
         ensure_dir(self.output_dir)
-
-    def _create_progress_hook(self) -> Callable:
-        """Create progress hook for yt-dlp."""
-        def hook(d: dict):
-            if d['status'] == 'finished':
-                filename = d.get('filename', '')
-                if filename.endswith('.vtt') and self.on_subtitle_downloaded:
-                    self.on_subtitle_downloaded(Path(filename))
-        return hook
 
     def get_channel_info(self, url: str) -> dict:
         """Get channel/playlist info without downloading."""
@@ -105,30 +62,52 @@ class Downloader:
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
+
+        # Try to detect default language from channel/video metadata
+        default_lang = info.get('language') or info.get('original_language')
+
         return {
             'title': info.get('title', info.get('channel', 'Unknown')),
             'channel': info.get('channel', info.get('uploader', 'Unknown')),
             'video_count': len(info.get('entries', [])) if 'entries' in info else 1,
             'url': url,
+            'default_language': default_lang,
         }
 
-    def download(self, url: str, langs: Optional[list[str]] = None) -> dict:
-        """Download subtitles from URL."""
+    def download_to_temp(
+        self,
+        url: str,
+        langs: Optional[list[str]] = None,
+        archive_path: Optional[Path] = None,
+    ) -> tuple[Path, dict]:
+        """
+        Download subtitles to a temporary directory.
+
+        Returns:
+            Tuple of (temp_dir_path, stats_dict)
+            Caller is responsible for cleaning up temp_dir.
+        """
         if not is_valid_youtube_url(url):
             raise ValueError(f"Invalid YouTube URL: {url}")
 
-        progress_hooks = [self._create_progress_hook()]
+        # Create temp directory for downloads
+        temp_dir = Path(tempfile.mkdtemp(prefix='ytrag_'))
+
+        # Use provided archive path or create one in output dir
+        if archive_path is None:
+            archive_path = self.output_dir / ARCHIVE_FILE
+
         opts = get_ydl_options(
-            output_dir=str(self.output_dir),
-            archive_path=str(self.archive_path),
-            progress_hooks=progress_hooks,
+            output_dir=str(temp_dir),
+            archive_path=str(archive_path),
             subtitles_langs=langs,
         )
+
         stats = {'downloaded': 0, 'skipped': 0, 'errors': 0}
+
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
-                stats['downloaded'] += 1
             self.rate_limiter.on_success()
         except yt_dlp.utils.DownloadError as e:
             if '429' in str(e) or 'Too Many Requests' in str(e):
@@ -136,4 +115,9 @@ class Downloader:
             stats['errors'] += 1
 
         self.rate_limiter.wait()
-        return stats
+
+        # Count downloaded files
+        vtt_files = list(temp_dir.glob('*.vtt'))
+        stats['downloaded'] = len(vtt_files)
+
+        return temp_dir, stats

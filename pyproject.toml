@@ -1,6 +1,6 @@
 [project]
 name = "ytrag"
-version = "1.0.1"
+version = "2.0.0"
 description = "YouTube transcripts to RAG-ready volumes"
 readme = "README.md"
 requires-python = ">=3.10"

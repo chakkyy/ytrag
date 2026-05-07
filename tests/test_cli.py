@@ -29,6 +29,14 @@ class TestCLI:
         assert result.exit_code == 0
         assert "YouTube URL" in result.stdout
 
+    def test_all_command_exposes_rate_limit_options(self):
+        """Should expose controls for large channel rate limiting."""
+        result = runner.invoke(app, ["all", "--help"])
+        assert result.exit_code == 0
+        assert "--sleep-interval" in result.stdout
+        assert "--stop-after-errors" in result.stdout
+        assert "--rate-limit-retries" in result.stdout
+
     def test_status_command_exists(self):
         """Should have status command."""
         result = runner.invoke(app, ["status", "--help"])

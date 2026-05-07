@@ -2,7 +2,12 @@
 """Tests for YouTube downloader module."""
 
 import pytest
-from ytrag.downloader import Downloader, get_ydl_options, normalize_youtube_collection_url
+from ytrag.downloader import (
+    Downloader,
+    YtragYdlLogger,
+    get_ydl_options,
+    normalize_youtube_collection_url,
+)
 
 
 class TestGetYdlOptions:
@@ -41,11 +46,69 @@ class TestGetYdlOptions:
         assert '%(upload_date)s' in opts['outtmpl']
         assert '%(title)s' in opts['outtmpl']
 
+    def test_uses_yt_dlp_sleep_preset_defaults(self):
+        """Should use conservative sleep defaults for large YouTube channels."""
+        opts = get_ydl_options("/tmp", "/tmp/archive.txt")
+        assert opts['sleep_interval_requests'] == 0.75
+        assert opts['sleep_interval'] == 10
+        assert opts['max_sleep_interval'] == 20
+        assert opts['sleep_interval_subtitles'] == 5
+
+    def test_stops_playlist_after_consecutive_errors_by_default(self):
+        """Should stop a playlist after repeated failures."""
+        opts = get_ydl_options("/tmp", "/tmp/archive.txt")
+        assert opts['skip_playlist_after_errors'] == 3
+
+    def test_retries_extractor_with_long_backoff(self):
+        """Should pause between extractor retries so rate limits can reset."""
+        opts = get_ydl_options("/tmp", "/tmp/archive.txt")
+        assert opts['extractor_retries'] == 6
+        sleep = opts['retry_sleep_functions']['extractor']
+        assert sleep(0) == 300
+        assert sleep(1) == 600
+        assert sleep(4) == 3600
+
+    def test_accepts_custom_sleep_values(self):
+        """Should allow callers to tune sleep values."""
+        opts = get_ydl_options(
+            "/tmp",
+            "/tmp/archive.txt",
+            sleep_requests=2,
+            sleep_interval=7,
+            max_sleep_interval=9,
+            sleep_subtitles=3,
+            skip_playlist_after_errors=5,
+            extractor_retries=2,
+            extractor_retry_sleep=60,
+        )
+        assert opts['sleep_interval_requests'] == 2
+        assert opts['sleep_interval'] == 7
+        assert opts['max_sleep_interval'] == 9
+        assert opts['sleep_interval_subtitles'] == 3
+        assert opts['skip_playlist_after_errors'] == 5
+        assert opts['extractor_retries'] == 2
+        assert opts['retry_sleep_functions']['extractor'](1) == 120
+
     def test_accepts_progress_hooks(self):
         """Should pass progress hooks through to yt-dlp."""
         hook = lambda data: None
         opts = get_ydl_options("/tmp", "/tmp/archive.txt", progress_hooks=[hook])
         assert opts['progress_hooks'] == [hook]
+
+
+class TestYtragYdlLogger:
+    """Tests for yt-dlp logger integration."""
+
+    def test_tracks_rate_limit_errors_and_video_ids(self):
+        """Should capture rate-limit messages and video IDs."""
+        stats = {'downloaded': 0, 'skipped': 0, 'errors': 0, 'rate_limited': False, 'failed_videos': []}
+        logger = YtragYdlLogger(stats)
+
+        logger.error("[youtube] DX-5Otnl2Qo: Video unavailable. This content isn't available, try again later.")
+
+        assert stats['errors'] == 1
+        assert stats['rate_limited'] is True
+        assert stats['failed_videos'] == ['DX-5Otnl2Qo']
 
 
 class TestNormalizeYoutubeCollectionUrl:

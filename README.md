@@ -63,6 +63,9 @@ ytrag all "https://..." --output ./my-transcripts
 # Adjust transcripts per volume (default: 100)
 ytrag all "https://..." --per-volume 50
 
+# Slow down large channel downloads to avoid YouTube rate limits
+ytrag all "https://..." --sleep-interval 15 --max-sleep-interval 30
+
 # Check status of current directory
 ytrag status
 
@@ -111,7 +114,16 @@ Some videos don't have subtitles enabled. Try:
 
 ### Rate limiting errors
 
-YouTube may rate-limit downloads. ytrag handles this automatically with exponential backoff, but for large channels you may need to wait or run again later.
+YouTube may rate-limit large channel downloads. ytrag uses conservative delays by default and retries extractor failures with exponential backoff. If YouTube still rate-limits the session, failed videos are not added to `.ytrag_archive`; run the same command again later and ytrag will retry the missing videos.
+
+Useful controls:
+
+```bash
+ytrag all "https://..." \
+  --sleep-interval 15 \
+  --max-sleep-interval 30 \
+  --stop-after-errors 3
+```
 
 ## License
 

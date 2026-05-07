@@ -81,6 +81,13 @@ def all_pipeline(
     output: Path = typer.Option(".", "--output", "-o", help="Output directory"),
     lang: Optional[str] = typer.Option(None, "--lang", "-l", help="Subtitle languages. Defaults to video's language."),
     per_volume: int = typer.Option(100, "--per-volume", "-n", help="Transcripts per volume"),
+    sleep_requests: float = typer.Option(0.75, "--sleep-requests", help="Seconds to sleep between YouTube extraction requests"),
+    sleep_interval: float = typer.Option(10, "--sleep-interval", help="Minimum seconds to sleep before each video"),
+    max_sleep_interval: float = typer.Option(20, "--max-sleep-interval", help="Maximum seconds to sleep before each video"),
+    sleep_subtitles: float = typer.Option(5, "--sleep-subtitles", help="Seconds to sleep before each subtitle download"),
+    stop_after_errors: int = typer.Option(3, "--stop-after-errors", help="Stop playlist after this many consecutive failures"),
+    rate_limit_retries: int = typer.Option(6, "--rate-limit-retries", help="Extractor retries when YouTube rate-limits the session"),
+    rate_limit_retry_sleep: float = typer.Option(300, "--rate-limit-retry-sleep", help="Base seconds for exponential rate-limit retry backoff"),
 ):
     """Download YouTube transcripts and create RAG-ready volumes."""
     output = Path(output).resolve()
@@ -141,7 +148,17 @@ def all_pipeline(
                 progress.update(task, **update)
 
         temp_dir, download_stats = downloader.download_to_temp(
-            url, langs=langs, archive_path=archive_path, progress_hooks=[progress_hook]
+            url,
+            langs=langs,
+            archive_path=archive_path,
+            progress_hooks=[progress_hook],
+            sleep_requests=sleep_requests,
+            sleep_interval=sleep_interval,
+            max_sleep_interval=max_sleep_interval,
+            sleep_subtitles=sleep_subtitles,
+            skip_playlist_after_errors=stop_after_errors,
+            extractor_retries=rate_limit_retries,
+            extractor_retry_sleep=rate_limit_retry_sleep,
         )
 
     try:
@@ -149,6 +166,14 @@ def all_pipeline(
             console.print(f"  Downloaded: {download_stats['downloaded']} subtitle files")
         if download_stats['errors']:
             console.print(f"  [yellow]Download errors: {download_stats['errors']}[/]")
+        if download_stats['failed_videos']:
+            failed_sample = ", ".join(download_stats['failed_videos'][:5])
+            console.print(f"  [yellow]Failed video IDs: {failed_sample}[/]")
+        if download_stats['rate_limited']:
+            console.print(
+                "  [yellow]YouTube rate-limited this session. Failed videos were not added "
+                "to the archive; rerun the same command later to retry them.[/]"
+            )
 
         # Process VTT files
         with console.status("[bold green]Processing transcripts..."):

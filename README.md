@@ -90,6 +90,8 @@ Each volume contains cleaned, consolidated transcripts ready for use with LLMs a
 - **Simple**: One command does everything
 - **Auto language detection**: Defaults to video's original language
 - **Resume support**: Re-run to continue where you left off
+- **Clear progress**: Shows current/total videos and ETA while downloading large channels
+- **Accurate channel counts**: Channel root URLs automatically target the Videos tab
 - **Smart deduplication**: Skips regional variants (en-US if en exists)
 - **Adaptive rate limiting**: Automatically handles YouTube rate limits
 - **Clean output**: No intermediate files, just the volumes you need

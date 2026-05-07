@@ -2,13 +2,47 @@
 """YouTube subtitle downloader using yt-dlp."""
 
 import tempfile
-import shutil
 from pathlib import Path
 from typing import Optional, Callable
+from urllib.parse import urlparse, urlunparse
 import yt_dlp
 
 from ytrag.rate_limiter import AdaptiveRateLimiter
 from ytrag.utils import ARCHIVE_FILE, ensure_dir, is_valid_youtube_url
+
+
+CHANNEL_TABS = {'videos', 'shorts', 'streams', 'live', 'playlists', 'community', 'featured'}
+
+
+def normalize_youtube_collection_url(url: str) -> str:
+    """
+    Point YouTube channel roots at the videos tab.
+
+    YouTube channel root URLs can extract as a tab collection, commonly yielding
+    entries like Videos/Shorts/Live instead of the actual upload list.
+    """
+    parsed = urlparse(url)
+    if 'youtube.com' not in parsed.netloc.lower():
+        return url
+
+    parts = [part for part in parsed.path.split('/') if part]
+    if not parts:
+        return url
+
+    first = parts[0].lower()
+    if first in {'watch', 'playlist', 'shorts'}:
+        return url
+
+    if parts[-1].lower() in CHANNEL_TABS:
+        return url
+
+    is_handle_root = len(parts) == 1 and parts[0].startswith('@')
+    is_named_channel_root = len(parts) == 2 and first in {'channel', 'c', 'user'}
+    if not (is_handle_root or is_named_channel_root):
+        return url
+
+    path = parsed.path.rstrip('/') + '/videos'
+    return urlunparse(parsed._replace(path=path))
 
 
 def get_ydl_options(
@@ -55,22 +89,27 @@ class Downloader:
         if not is_valid_youtube_url(url):
             raise ValueError(f"Invalid YouTube URL: {url}")
 
+        download_url = normalize_youtube_collection_url(url)
         opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': True,
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = ydl.extract_info(download_url, download=False)
 
         # Try to detect default language from channel/video metadata
         default_lang = info.get('language') or info.get('original_language')
+        entries = info.get('entries')
+        video_count = info.get('playlist_count') or info.get('n_entries')
+        if video_count is None:
+            video_count = len(entries) if entries is not None else 1
 
         return {
             'title': info.get('title', info.get('channel', 'Unknown')),
             'channel': info.get('channel', info.get('uploader', 'Unknown')),
-            'video_count': len(info.get('entries', [])) if 'entries' in info else 1,
-            'url': url,
+            'video_count': video_count,
+            'url': download_url,
             'default_language': default_lang,
         }
 
@@ -79,6 +118,7 @@ class Downloader:
         url: str,
         langs: Optional[list[str]] = None,
         archive_path: Optional[Path] = None,
+        progress_hooks: Optional[list[Callable]] = None,
     ) -> tuple[Path, dict]:
         """
         Download subtitles to a temporary directory.
@@ -90,6 +130,8 @@ class Downloader:
         if not is_valid_youtube_url(url):
             raise ValueError(f"Invalid YouTube URL: {url}")
 
+        download_url = normalize_youtube_collection_url(url)
+
         # Create temp directory for downloads
         temp_dir = Path(tempfile.mkdtemp(prefix='ytrag_'))
 
@@ -100,6 +142,7 @@ class Downloader:
         opts = get_ydl_options(
             output_dir=str(temp_dir),
             archive_path=str(archive_path),
+            progress_hooks=progress_hooks,
             subtitles_langs=langs,
         )
 
@@ -107,7 +150,7 @@ class Downloader:
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
+                ydl.download([download_url])
             self.rate_limiter.on_success()
         except yt_dlp.utils.DownloadError as e:
             if '429' in str(e) or 'Too Many Requests' in str(e):

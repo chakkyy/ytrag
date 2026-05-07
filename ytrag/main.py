@@ -7,7 +7,7 @@ from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn, TimeRemainingColumn
 from rich.panel import Panel
 
 from ytrag import __version__
@@ -22,6 +22,37 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+
+def _first_positive_int(*values) -> Optional[int]:
+    """Return the first value that can be treated as a positive integer."""
+    for value in values:
+        if value is None:
+            continue
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            return number
+    return None
+
+
+def extract_download_progress(data: dict, fallback_total: Optional[int] = None) -> tuple[Optional[int], Optional[int]]:
+    """Extract current playlist position and total from a yt-dlp progress hook."""
+    info_dict = data.get('info_dict') or {}
+    current = _first_positive_int(
+        data.get('playlist_index'),
+        info_dict.get('playlist_index'),
+    )
+    total = _first_positive_int(
+        data.get('playlist_count'),
+        data.get('n_entries'),
+        info_dict.get('playlist_count'),
+        info_dict.get('n_entries'),
+        fallback_total,
+    )
+    return current, total
 
 
 def version_callback(value: bool):
@@ -87,14 +118,38 @@ def all_pipeline(
     archive_path = channel_dir / ARCHIVE_FILE
 
     # Download to temp directory
-    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
-                  BarColumn(), TaskProgressColumn(), console=console) as progress:
-        task = progress.add_task("Downloading subtitles...", total=None)
+    progress_total = info.get('video_count') or None
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("ETA:"),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Downloading subtitles...", total=progress_total)
+
+        def progress_hook(data: dict) -> None:
+            current, total = extract_download_progress(data, fallback_total=progress_total)
+            update = {}
+            if total is not None:
+                update['total'] = total
+            if current is not None:
+                update['completed'] = min(current, total) if total is not None else current
+            if update:
+                progress.update(task, **update)
+
         temp_dir, download_stats = downloader.download_to_temp(
-            url, langs=langs, archive_path=archive_path
+            url, langs=langs, archive_path=archive_path, progress_hooks=[progress_hook]
         )
 
     try:
+        if download_stats['downloaded']:
+            console.print(f"  Downloaded: {download_stats['downloaded']} subtitle files")
+        if download_stats['errors']:
+            console.print(f"  [yellow]Download errors: {download_stats['errors']}[/]")
+
         # Process VTT files
         with console.status("[bold green]Processing transcripts..."):
             transcripts = process_vtt_directory(temp_dir, channel_name)

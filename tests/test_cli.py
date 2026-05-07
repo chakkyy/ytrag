@@ -3,7 +3,7 @@
 
 import pytest
 from typer.testing import CliRunner
-from ytrag.main import app
+from ytrag.main import app, extract_download_progress
 
 runner = CliRunner()
 
@@ -33,3 +33,28 @@ class TestCLI:
         """Should have status command."""
         result = runner.invoke(app, ["status", "--help"])
         assert result.exit_code == 0
+
+
+class TestDownloadProgress:
+    """Tests for yt-dlp progress parsing."""
+
+    def test_extracts_playlist_progress_from_info_dict(self):
+        """Should return current index and total count from yt-dlp metadata."""
+        progress = extract_download_progress(
+            {'info_dict': {'playlist_index': 12, 'playlist_count': 50}},
+            fallback_total=3,
+        )
+        assert progress == (12, 50)
+
+    def test_uses_fallback_total_when_hook_has_no_total(self):
+        """Should keep the preflight total when yt-dlp omits playlist_count."""
+        progress = extract_download_progress(
+            {'info_dict': {'playlist_index': 4}},
+            fallback_total=20,
+        )
+        assert progress == (4, 20)
+
+    def test_returns_none_for_missing_index(self):
+        """Should ignore hook payloads that cannot identify the current item."""
+        progress = extract_download_progress({'status': 'downloading'}, fallback_total=20)
+        assert progress == (None, 20)

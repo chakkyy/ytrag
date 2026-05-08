@@ -1,6 +1,7 @@
 """VTT cleaner module for converting subtitles to clean, readable text."""
 
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +25,16 @@ RE_HTML_TAGS = re.compile(r'<[^>]+>')
 RE_POSITION_ATTRS = re.compile(r'align:\w+|position:\d+%')
 RE_INLINE_TIMESTAMP = re.compile(r'<\d{2}:\d{2}:\d{2}\.\d{3}>')
 RE_MULTIPLE_SPACES = re.compile(r'\s+')
+
+
+def normalize_language(language: str) -> str:
+    """Normalize language codes for comparison."""
+    return language.replace('_', '-').upper()
+
+
+def language_base(language: str) -> str:
+    """Return the base language code."""
+    return normalize_language(language).split('-', 1)[0]
 
 
 def parse_vtt_timestamp(timestamp: str) -> Optional[float]:
@@ -209,7 +220,42 @@ def process_vtt_file(vtt_path: Path, channel_name: str) -> Optional[dict]:
         return None
 
 
-def process_vtt_directory(temp_dir: Path, channel_name: str) -> list[dict]:
+def choose_preferred_language(
+    available_languages: list[str],
+    preferred_langs: Optional[list[str]] = None,
+) -> Optional[str]:
+    """Choose explicit preferred language or majority language from available files."""
+    languages = [normalize_language(lang) for lang in available_languages if lang]
+    if not languages:
+        return None
+
+    if preferred_langs:
+        return normalize_language(preferred_langs[0])
+
+    counts = Counter(language_base(lang) for lang in languages)
+    return counts.most_common(1)[0][0]
+
+
+def language_priority(language: str, preferred_language: Optional[str]) -> tuple[int, int, str]:
+    """Rank languages so exact preferred wins, then preferred variants, then others."""
+    normalized = normalize_language(language)
+    if not preferred_language:
+        return (0, 1 if '-' in normalized else 0, normalized)
+
+    preferred = normalize_language(preferred_language)
+    preferred_base = language_base(preferred)
+    if normalized == preferred:
+        return (0, 0, normalized)
+    if language_base(normalized) == preferred_base:
+        return (1, 1 if '-' in normalized else 0, normalized)
+    return (2, 1 if '-' in normalized else 0, normalized)
+
+
+def process_vtt_directory(
+    temp_dir: Path,
+    channel_name: str,
+    preferred_langs: Optional[list[str]] = None,
+) -> list[dict]:
     """
     Process all VTT files in a directory.
 
@@ -217,10 +263,14 @@ def process_vtt_directory(temp_dir: Path, channel_name: str) -> list[dict]:
     Handles deduplication (prefers non-regional variants).
     """
     vtt_files = list(temp_dir.glob('*.vtt'))
+    preferred_language = choose_preferred_language(
+        [get_language_from_filename(vtt_file.name) for vtt_file in vtt_files],
+        preferred_langs,
+    )
 
-    # Sort to process non-regional variants first
     def sort_key(f: Path) -> tuple[int, str]:
-        return (1 if is_regional_variant(f.name) else 0, f.name)
+        language = get_language_from_filename(f.name)
+        return (*language_priority(language, preferred_language), f.name)
 
     vtt_files.sort(key=sort_key)
 

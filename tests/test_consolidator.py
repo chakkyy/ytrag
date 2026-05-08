@@ -8,6 +8,8 @@ import tempfile
 
 from ytrag.consolidator import (
     TRANSCRIPTS_PER_VOLUME,
+    calculate_transcripts_per_volume,
+    extract_video_metadata,
     format_transcript,
     create_volumes,
     create_clean_transcript_files,
@@ -34,11 +36,56 @@ class TestFormatTranscript:
         transcript = make_transcript("20240101_Test Video")
         result = format_transcript(transcript)
 
-        assert "# 20240101_Test Video" in result
+        assert "## 2024-01-01 · Test Video" in result
         assert "**Idioma:** EN" in result
         assert "**Canal:** Test Channel" in result
-        assert "**Fuente:** 20240101_Test Video.en.vtt" in result
+        assert "**Fecha:** 2024-01-01" in result
+        assert "**Video:** Test Video" in result
+        assert "**Archivo fuente:** 20240101_Test Video.en.vtt" in result
         assert "Test content" in result
+
+    def test_repeats_source_marker_every_three_paragraphs(self):
+        """Should keep source metadata near cited text."""
+        content = "\n\n".join([f"Paragraph {i}" for i in range(1, 8)])
+        transcript = make_transcript("20240101_Test Video", content=content)
+
+        result = format_transcript(transcript, source_marker_frequency=3)
+
+        marker = "[Fuente: 2024-01-01 · Test Video]"
+        assert result.count(marker) == 3
+        assert f"{marker}\nParagraph 4" in result
+
+
+class TestExtractVideoMetadata:
+    """Tests for video metadata extraction from filenames."""
+
+    def test_extracts_date_and_title_from_base_name(self):
+        """Should parse YYYYMMDD prefixes into friendly metadata."""
+        metadata = extract_video_metadata("20240131_Mi Video")
+
+        assert metadata['date'] == "2024-01-31"
+        assert metadata['title'] == "Mi Video"
+        assert metadata['label'] == "2024-01-31 · Mi Video"
+
+    def test_handles_missing_date(self):
+        """Should still create a useful label when no date exists."""
+        metadata = extract_video_metadata("Mi Video")
+
+        assert metadata['date'] is None
+        assert metadata['title'] == "Mi Video"
+        assert metadata['label'] == "Mi Video"
+
+
+class TestCalculateTranscriptsPerVolume:
+    """Tests for target volume calculation."""
+
+    def test_calculates_from_target_volumes(self):
+        """Should calculate transcripts per volume from desired source count."""
+        assert calculate_transcripts_per_volume(total_transcripts=1371, target_volumes=50) == 28
+
+    def test_per_volume_override_wins(self):
+        """Should use explicit per-volume override when provided."""
+        assert calculate_transcripts_per_volume(1371, target_volumes=50, per_volume=75) == 75
 
 
 class TestCreateVolumes:
@@ -134,6 +181,22 @@ class TestCreateVolumes:
             assert stats['total'] == 0
             assert stats['volumes'] == []
 
+    def test_removes_stale_volume_files_before_writing(self):
+        """Should not leave old volume files from a previous export."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            (output_dir / "TestChannel_Vol99.txt").write_text("stale")
+            transcripts = [make_transcript("video1")]
+
+            create_volumes(
+                transcripts=transcripts,
+                output_dir=output_dir,
+                channel_name="TestChannel",
+            )
+
+            assert not (output_dir / "TestChannel_Vol99.txt").exists()
+            assert (output_dir / "TestChannel_Vol01.txt").exists()
+
 
 class TestWriteManifest:
     """Tests for manifest writing."""
@@ -177,5 +240,17 @@ class TestCreateCleanTranscriptFiles:
 
             assert files == ["20240101_First Video.md"]
             content = (output_dir / "20240101_First Video.md").read_text()
-            assert "# 20240101_First Video" in content
+            assert "## 2024-01-01 · First Video" in content
             assert "Test content" in content
+
+    def test_removes_stale_clean_transcripts_before_writing(self):
+        """Should not leave old clean transcript files from a previous export."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            (output_dir / "stale.md").write_text("stale")
+            transcripts = [make_transcript("20240101_First Video")]
+
+            create_clean_transcript_files(transcripts, output_dir)
+
+            assert not (output_dir / "stale.md").exists()
+            assert (output_dir / "20240101_First Video.md").exists()

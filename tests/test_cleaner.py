@@ -11,6 +11,7 @@ from ytrag.cleaner import (
     capitalize_sentences,
     process_vtt_file,
     process_vtt_directory,
+    choose_preferred_language,
 )
 
 
@@ -169,3 +170,64 @@ class TestProcessVTTDirectory:
 
             assert len(results) == 1
             assert "non-regional" in results[0]['content'].lower()
+
+    def test_prefers_requested_language_when_deduplicating(self):
+        """Should keep the requested language when multiple languages exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            (tmpdir / "20240101_Video.en.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nenglish"
+            )
+            (tmpdir / "20240101_Video.es.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nespanol"
+            )
+
+            results = process_vtt_directory(tmpdir, "Test Channel", preferred_langs=["es"])
+
+            assert len(results) == 1
+            assert results[0]['language'] == "ES"
+            assert "espanol" in results[0]['content'].lower()
+
+    def test_prefers_majority_language_when_no_language_requested(self):
+        """Should use the majority subtitle language as default preference."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            (tmpdir / "20240101_Video.en.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nenglish"
+            )
+            (tmpdir / "20240101_Video.es.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nespanol"
+            )
+            (tmpdir / "20240102_Another.es.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\notro"
+            )
+
+            results = process_vtt_directory(tmpdir, "Test Channel")
+
+            assert len(results) == 2
+            assert results[0]['language'] == "ES"
+
+    def test_falls_back_when_requested_language_is_missing(self):
+        """Should keep another available language if the requested one is absent."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            (tmpdir / "20240101_Video.en.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nenglish"
+            )
+
+            results = process_vtt_directory(tmpdir, "Test Channel", preferred_langs=["es"])
+
+            assert len(results) == 1
+            assert results[0]['language'] == "EN"
+
+
+class TestChoosePreferredLanguage:
+    """Tests for majority language detection."""
+
+    def test_uses_requested_language_first(self):
+        """Should prefer explicit user language over majority."""
+        assert choose_preferred_language(["en", "es", "es"], ["en"]) == "EN"
+
+    def test_detects_majority_language(self):
+        """Should detect majority language from available files."""
+        assert choose_preferred_language(["en", "es", "es"], None) == "ES"

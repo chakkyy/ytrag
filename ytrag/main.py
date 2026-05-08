@@ -2,6 +2,7 @@
 """ytrag CLI - YouTube transcripts to RAG-ready volumes."""
 
 import shutil
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -13,7 +14,12 @@ from rich.panel import Panel
 from ytrag import __version__
 from ytrag.downloader import Downloader
 from ytrag.cleaner import process_vtt_directory
-from ytrag.consolidator import TRANSCRIPTS_PER_VOLUME, create_clean_transcript_files, create_volumes, write_manifest
+from ytrag.consolidator import (
+    calculate_transcripts_per_volume,
+    create_clean_transcript_files,
+    create_volumes,
+    write_manifest,
+)
 from ytrag.utils import ARCHIVE_FILE, ensure_dir, sanitize_filename
 
 app = typer.Typer(
@@ -22,6 +28,8 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+TARGET_VOLUMES = 50
+SOURCE_MARKER_FREQUENCY = 3
 
 
 def build_output_paths(output: Path, channel_name: str) -> dict[str, Path]:
@@ -34,6 +42,15 @@ def build_output_paths(output: Path, channel_name: str) -> dict[str, Path]:
         'volumes': project_dir / "rag-volumes",
         'archive': project_dir / ARCHIVE_FILE,
     }
+
+
+def should_prompt(interactive: Optional[bool], is_tty: Optional[bool] = None) -> bool:
+    """Decide whether to ask interactive CLI questions."""
+    if interactive is not None:
+        return interactive
+    if is_tty is None:
+        is_tty = sys.stdin.isatty()
+    return is_tty
 
 
 def _first_positive_int(*values) -> Optional[int]:
@@ -92,7 +109,11 @@ def all_pipeline(
     url: str = typer.Argument(..., help="YouTube URL"),
     output: Path = typer.Option(".", "--output", "-o", help="Output directory"),
     lang: Optional[str] = typer.Option(None, "--lang", "-l", help="Subtitle languages. Defaults to video's language."),
-    per_volume: int = typer.Option(TRANSCRIPTS_PER_VOLUME, "--per-volume", "-n", help="Transcripts per volume"),
+    target_volumes: int = typer.Option(TARGET_VOLUMES, "--target-volumes", help="Target number of RAG-ready volume files"),
+    per_volume: Optional[int] = typer.Option(None, "--per-volume", "-n", help="Advanced override: transcripts per volume"),
+    keep_raw: bool = typer.Option(False, "--keep-raw/--no-keep-raw", help="Keep downloaded raw VTT subtitle files"),
+    source_marker_frequency: int = typer.Option(SOURCE_MARKER_FREQUENCY, "--source-marker-frequency", help="Repeat source marker every N paragraphs"),
+    interactive: Optional[bool] = typer.Option(None, "--interactive/--no-interactive", help="Ask export questions in an interactive terminal"),
     sleep_requests: float = typer.Option(0.75, "--sleep-requests", help="Seconds to sleep between YouTube extraction requests"),
     sleep_interval: float = typer.Option(10, "--sleep-interval", help="Minimum seconds to sleep before each video"),
     max_sleep_interval: float = typer.Option(20, "--max-sleep-interval", help="Maximum seconds to sleep before each video"),
@@ -122,19 +143,50 @@ def all_pipeline(
     channel_name = info['channel']
 
     # Determine languages
+    prompt = should_prompt(interactive)
     if lang:
         langs = [l.strip() for l in lang.split(",")]
+    elif prompt:
+        default_lang = info.get('default_language') or 'es'
+        language_answer = typer.prompt(
+            "Subtitle languages (comma-separated, empty for channel/default)",
+            default=default_lang,
+            show_default=True,
+        )
+        langs = [l.strip() for l in language_answer.split(",") if l.strip()]
     else:
         default_lang = info.get('default_language') or 'en'
         langs = [default_lang]
         console.print(f"  [dim]Language: {default_lang}[/]")
+
+    if prompt:
+        target_volumes = typer.prompt(
+            "Target RAG volume files",
+            default=target_volumes,
+            type=int,
+            show_default=True,
+        )
+        if per_volume is None:
+            per_volume_answer = typer.prompt(
+                "Transcripts per volume override (0 = auto)",
+                default=0,
+                type=int,
+                show_default=True,
+            )
+            per_volume = per_volume_answer or None
+        keep_raw = typer.confirm("Keep raw VTT subtitle files?", default=keep_raw)
+        source_marker_frequency = typer.prompt(
+            "Repeat source marker every N paragraphs",
+            default=source_marker_frequency,
+            type=int,
+            show_default=True,
+        )
 
     console.print(f"  Channel: {channel_name}")
     console.print(f"  Videos: {info['video_count']}")
 
     paths = build_output_paths(output, channel_name)
     project_dir = ensure_dir(paths['project'])
-    raw_dir = ensure_dir(paths['raw'])
     clean_dir = ensure_dir(paths['clean'])
     volumes_dir = ensure_dir(paths['volumes'])
     archive_path = paths['archive']
@@ -190,21 +242,32 @@ def all_pipeline(
                 "to the archive; rerun the same command later to retry them.[/]"
             )
 
-        for vtt_file in temp_dir.glob('*.vtt'):
-            shutil.copy2(vtt_file, raw_dir / vtt_file.name)
+        if keep_raw:
+            raw_dir = ensure_dir(paths['raw'])
+            for vtt_file in temp_dir.glob('*.vtt'):
+                shutil.copy2(vtt_file, raw_dir / vtt_file.name)
 
         # Process VTT files
         with console.status("[bold green]Processing transcripts..."):
-            transcripts = process_vtt_directory(temp_dir, channel_name)
+            transcripts = process_vtt_directory(temp_dir, channel_name, preferred_langs=langs)
 
         if not transcripts:
             console.print("\n[yellow]No new transcripts to process.[/]")
             raise typer.Exit(0)
 
         console.print(f"\n  Processed: {len(transcripts)} transcripts")
+        transcripts_per_volume = calculate_transcripts_per_volume(
+            total_transcripts=len(transcripts),
+            target_volumes=target_volumes,
+            per_volume=per_volume,
+        )
 
         with console.status("[bold green]Writing clean transcripts..."):
-            clean_files = create_clean_transcript_files(transcripts, clean_dir)
+            clean_files = create_clean_transcript_files(
+                transcripts,
+                clean_dir,
+                source_marker_frequency=source_marker_frequency,
+            )
 
         # Create volumes
         with console.status("[bold green]Creating volumes..."):
@@ -212,11 +275,14 @@ def all_pipeline(
                 transcripts=transcripts,
                 output_dir=volumes_dir,
                 channel_name=channel_name,
-                transcripts_per_volume=per_volume,
+                transcripts_per_volume=transcripts_per_volume,
+                source_marker_frequency=source_marker_frequency,
             )
             stats['clean_transcripts'] = clean_files
             write_manifest(project_dir, channel_name, stats)
 
+        console.print(f"  Target volumes: {target_volumes}")
+        console.print(f"  Transcripts per volume: {transcripts_per_volume}")
         console.print(f"  Volumes: {len(stats['volumes'])}")
         console.print(f"\n[bold green]Done![/] Output: {project_dir}")
 
@@ -230,7 +296,12 @@ def rebuild(
     source: Path = typer.Argument(..., help="Directory containing downloaded VTT subtitle files"),
     channel_name: str = typer.Argument(..., help="Channel name for the rebuilt library"),
     output: Path = typer.Option(".", "--output", "-o", help="Output directory"),
-    per_volume: int = typer.Option(TRANSCRIPTS_PER_VOLUME, "--per-volume", "-n", help="Transcripts per volume"),
+    lang: Optional[str] = typer.Option(None, "--lang", "-l", help="Preferred subtitle language for deduplication"),
+    target_volumes: int = typer.Option(TARGET_VOLUMES, "--target-volumes", help="Target number of RAG-ready volume files"),
+    per_volume: Optional[int] = typer.Option(None, "--per-volume", "-n", help="Advanced override: transcripts per volume"),
+    keep_raw: bool = typer.Option(False, "--keep-raw/--no-keep-raw", help="Keep raw VTT subtitle files"),
+    source_marker_frequency: int = typer.Option(SOURCE_MARKER_FREQUENCY, "--source-marker-frequency", help="Repeat source marker every N paragraphs"),
+    interactive: Optional[bool] = typer.Option(None, "--interactive/--no-interactive", help="Ask export questions in an interactive terminal"),
 ):
     """Rebuild clean transcripts and RAG-ready volumes from local VTT files."""
     source = Path(source).resolve()
@@ -242,7 +313,6 @@ def rebuild(
 
     paths = build_output_paths(output, channel_name)
     project_dir = ensure_dir(paths['project'])
-    raw_dir = ensure_dir(paths['raw'])
     clean_dir = ensure_dir(paths['clean'])
     volumes_dir = ensure_dir(paths['volumes'])
 
@@ -251,31 +321,82 @@ def rebuild(
         console.print(f"[yellow]No VTT files found in {source}[/]")
         raise typer.Exit(0)
 
-    for vtt_file in vtt_files:
-        shutil.copy2(vtt_file, raw_dir / vtt_file.name)
+    prompt = should_prompt(interactive)
+    if lang:
+        langs = [l.strip() for l in lang.split(",") if l.strip()]
+    elif prompt:
+        language_answer = typer.prompt(
+            "Preferred subtitle language for deduplication (empty = majority)",
+            default="",
+            show_default=False,
+        )
+        langs = [l.strip() for l in language_answer.split(",") if l.strip()]
+    else:
+        langs = None
+
+    if prompt:
+        target_volumes = typer.prompt(
+            "Target RAG volume files",
+            default=target_volumes,
+            type=int,
+            show_default=True,
+        )
+        if per_volume is None:
+            per_volume_answer = typer.prompt(
+                "Transcripts per volume override (0 = auto)",
+                default=0,
+                type=int,
+                show_default=True,
+            )
+            per_volume = per_volume_answer or None
+        keep_raw = typer.confirm("Keep raw VTT subtitle files?", default=keep_raw)
+        source_marker_frequency = typer.prompt(
+            "Repeat source marker every N paragraphs",
+            default=source_marker_frequency,
+            type=int,
+            show_default=True,
+        )
+
+    if keep_raw:
+        raw_dir = ensure_dir(paths['raw'])
+        for vtt_file in vtt_files:
+            shutil.copy2(vtt_file, raw_dir / vtt_file.name)
 
     with console.status("[bold green]Processing transcripts..."):
-        transcripts = process_vtt_directory(raw_dir, channel_name)
+        transcripts = process_vtt_directory(source, channel_name, preferred_langs=langs)
 
     if not transcripts:
         console.print("\n[yellow]No transcripts to process.[/]")
         raise typer.Exit(0)
 
+    transcripts_per_volume = calculate_transcripts_per_volume(
+        total_transcripts=len(transcripts),
+        target_volumes=target_volumes,
+        per_volume=per_volume,
+    )
+
     with console.status("[bold green]Writing clean transcripts..."):
-        clean_files = create_clean_transcript_files(transcripts, clean_dir)
+        clean_files = create_clean_transcript_files(
+            transcripts,
+            clean_dir,
+            source_marker_frequency=source_marker_frequency,
+        )
 
     with console.status("[bold green]Creating volumes..."):
         stats = create_volumes(
             transcripts=transcripts,
             output_dir=volumes_dir,
             channel_name=channel_name,
-            transcripts_per_volume=per_volume,
+            transcripts_per_volume=transcripts_per_volume,
+            source_marker_frequency=source_marker_frequency,
         )
         stats['clean_transcripts'] = clean_files
         write_manifest(project_dir, channel_name, stats)
 
     console.print(f"  Raw subtitles: {len(vtt_files)}")
     console.print(f"  Processed: {len(transcripts)} transcripts")
+    console.print(f"  Target volumes: {target_volumes}")
+    console.print(f"  Transcripts per volume: {transcripts_per_volume}")
     console.print(f"  Volumes: {len(stats['volumes'])}")
     console.print(f"\n[bold green]Done![/] Output: {project_dir}")
 

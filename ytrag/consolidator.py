@@ -6,10 +6,10 @@ import math
 from pathlib import Path
 from datetime import datetime
 
-from ytrag.utils import ensure_dir
+from ytrag.utils import ensure_dir, sanitize_filename
 
 # Configuration
-TRANSCRIPTS_PER_VOLUME = 100
+TRANSCRIPTS_PER_VOLUME = 50
 SEPARATOR = "\n\n---\n[FIN DE TRANSCRIPCION]\n---\n\n"
 
 
@@ -100,6 +100,23 @@ def create_volumes(
     }
 
 
+def create_clean_transcript_files(
+    transcripts: list[dict],
+    output_dir: Path,
+) -> list[str]:
+    """Write one clean markdown transcript per video."""
+    ensure_dir(output_dir)
+
+    files = []
+    for transcript in transcripts:
+        filename = f"{sanitize_filename(transcript['base_name'])}.md"
+        path = output_dir / filename
+        path.write_text(format_transcript(transcript), encoding='utf-8')
+        files.append(filename)
+
+    return files
+
+
 def write_manifest(
     output_dir: Path,
     channel_name: str,
@@ -111,6 +128,7 @@ def write_manifest(
         'channel': channel_name,
         'total_transcripts': stats['total'],
         'volumes': stats['volumes'],
+        'clean_transcripts': stats.get('clean_transcripts'),
         'skipped': stats['skipped'] if stats['skipped'] else None,
     }
 

@@ -7,8 +7,10 @@ from pathlib import Path
 import tempfile
 
 from ytrag.consolidator import (
+    TRANSCRIPTS_PER_VOLUME,
     format_transcript,
     create_volumes,
+    create_clean_transcript_files,
     write_manifest,
 )
 
@@ -41,6 +43,10 @@ class TestFormatTranscript:
 
 class TestCreateVolumes:
     """Tests for volume creation."""
+
+    def test_default_volume_size_is_not_too_large_for_notebooklm(self):
+        """Should keep default volumes small enough for large channels."""
+        assert TRANSCRIPTS_PER_VOLUME == 50
 
     def test_creates_single_volume(self):
         """Should create single volume for small batch."""
@@ -156,3 +162,20 @@ class TestWriteManifest:
 
             data = json.loads(manifest_path.read_text())
             assert 'generated_at' in data
+
+
+class TestCreateCleanTranscriptFiles:
+    """Tests for writing per-video clean transcript files."""
+
+    def test_writes_clean_transcripts_to_dedicated_folder(self):
+        """Should create one clean markdown file per transcript."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            transcripts = [make_transcript("20240101_First Video")]
+
+            files = create_clean_transcript_files(transcripts, output_dir)
+
+            assert files == ["20240101_First Video.md"]
+            content = (output_dir / "20240101_First Video.md").read_text()
+            assert "# 20240101_First Video" in content
+            assert "Test content" in content

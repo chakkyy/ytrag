@@ -3,7 +3,9 @@
 
 import pytest
 from typer.testing import CliRunner
-from ytrag.main import app, extract_download_progress
+from pathlib import Path
+
+from ytrag.main import app, build_output_paths, extract_download_progress
 
 runner = CliRunner()
 
@@ -42,6 +44,24 @@ class TestCLI:
         result = runner.invoke(app, ["status", "--help"])
         assert result.exit_code == 0
 
+    def test_rebuild_command_exists(self):
+        """Should expose a command for rebuilding volumes from local VTT files."""
+        result = runner.invoke(app, ["rebuild", "--help"])
+        assert result.exit_code == 0
+        assert "VTT" in result.stdout
+
+    def test_status_detects_new_rag_volume_folder(self, tmp_path):
+        """Should detect volumes in the new rag-volumes layout."""
+        volumes_dir = tmp_path / "ytrag-TestChannel" / "rag-volumes"
+        volumes_dir.mkdir(parents=True)
+        (volumes_dir / "TestChannel_Vol01.txt").write_text("volume")
+
+        result = runner.invoke(app, ["status", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "ytrag-TestChannel" in result.stdout
+        assert "Volumes: 1" in result.stdout
+
 
 class TestDownloadProgress:
     """Tests for yt-dlp progress parsing."""
@@ -66,3 +86,17 @@ class TestDownloadProgress:
         """Should ignore hook payloads that cannot identify the current item."""
         progress = extract_download_progress({'status': 'downloading'}, fallback_total=20)
         assert progress == (None, 20)
+
+
+class TestOutputPaths:
+    """Tests for output folder layout."""
+
+    def test_builds_single_project_folder_with_named_subfolders(self, tmp_path):
+        """Should keep raw, clean, and rag-ready outputs under one project folder."""
+        paths = build_output_paths(tmp_path, "Rincón Apologético")
+
+        assert paths['project'] == tmp_path / "ytrag-Rincón Apologético"
+        assert paths['raw'] == paths['project'] / "raw-subtitles"
+        assert paths['clean'] == paths['project'] / "clean-transcripts"
+        assert paths['volumes'] == paths['project'] / "rag-volumes"
+        assert paths['archive'] == paths['project'] / ".ytrag_archive"

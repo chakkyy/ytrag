@@ -13,8 +13,8 @@ from rich.panel import Panel
 from ytrag import __version__
 from ytrag.downloader import Downloader
 from ytrag.cleaner import process_vtt_directory
-from ytrag.consolidator import create_volumes, write_manifest
-from ytrag.utils import ARCHIVE_FILE, ensure_dir
+from ytrag.consolidator import TRANSCRIPTS_PER_VOLUME, create_clean_transcript_files, create_volumes, write_manifest
+from ytrag.utils import ARCHIVE_FILE, ensure_dir, sanitize_filename
 
 app = typer.Typer(
     name="ytrag",
@@ -22,6 +22,18 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+
+def build_output_paths(output: Path, channel_name: str) -> dict[str, Path]:
+    """Build the ytrag project folder layout for a channel."""
+    project_dir = output / f"ytrag-{sanitize_filename(channel_name)}"
+    return {
+        'project': project_dir,
+        'raw': project_dir / "raw-subtitles",
+        'clean': project_dir / "clean-transcripts",
+        'volumes': project_dir / "rag-volumes",
+        'archive': project_dir / ARCHIVE_FILE,
+    }
 
 
 def _first_positive_int(*values) -> Optional[int]:
@@ -80,7 +92,7 @@ def all_pipeline(
     url: str = typer.Argument(..., help="YouTube URL"),
     output: Path = typer.Option(".", "--output", "-o", help="Output directory"),
     lang: Optional[str] = typer.Option(None, "--lang", "-l", help="Subtitle languages. Defaults to video's language."),
-    per_volume: int = typer.Option(100, "--per-volume", "-n", help="Transcripts per volume"),
+    per_volume: int = typer.Option(TRANSCRIPTS_PER_VOLUME, "--per-volume", "-n", help="Transcripts per volume"),
     sleep_requests: float = typer.Option(0.75, "--sleep-requests", help="Seconds to sleep between YouTube extraction requests"),
     sleep_interval: float = typer.Option(10, "--sleep-interval", help="Minimum seconds to sleep before each video"),
     max_sleep_interval: float = typer.Option(20, "--max-sleep-interval", help="Maximum seconds to sleep before each video"),
@@ -120,9 +132,12 @@ def all_pipeline(
     console.print(f"  Channel: {channel_name}")
     console.print(f"  Videos: {info['video_count']}")
 
-    # Create channel output directory
-    channel_dir = ensure_dir(output / channel_name)
-    archive_path = channel_dir / ARCHIVE_FILE
+    paths = build_output_paths(output, channel_name)
+    project_dir = ensure_dir(paths['project'])
+    raw_dir = ensure_dir(paths['raw'])
+    clean_dir = ensure_dir(paths['clean'])
+    volumes_dir = ensure_dir(paths['volumes'])
+    archive_path = paths['archive']
 
     # Download to temp directory
     progress_total = info.get('video_count') or None
@@ -175,6 +190,9 @@ def all_pipeline(
                 "to the archive; rerun the same command later to retry them.[/]"
             )
 
+        for vtt_file in temp_dir.glob('*.vtt'):
+            shutil.copy2(vtt_file, raw_dir / vtt_file.name)
+
         # Process VTT files
         with console.status("[bold green]Processing transcripts..."):
             transcripts = process_vtt_directory(temp_dir, channel_name)
@@ -185,22 +203,81 @@ def all_pipeline(
 
         console.print(f"\n  Processed: {len(transcripts)} transcripts")
 
+        with console.status("[bold green]Writing clean transcripts..."):
+            clean_files = create_clean_transcript_files(transcripts, clean_dir)
+
         # Create volumes
         with console.status("[bold green]Creating volumes..."):
             stats = create_volumes(
                 transcripts=transcripts,
-                output_dir=channel_dir,
+                output_dir=volumes_dir,
                 channel_name=channel_name,
                 transcripts_per_volume=per_volume,
             )
-            write_manifest(channel_dir, channel_name, stats)
+            stats['clean_transcripts'] = clean_files
+            write_manifest(project_dir, channel_name, stats)
 
         console.print(f"  Volumes: {len(stats['volumes'])}")
-        console.print(f"\n[bold green]Done![/] Output: {channel_dir}")
+        console.print(f"\n[bold green]Done![/] Output: {project_dir}")
 
     finally:
         # Clean up temp directory
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@app.command()
+def rebuild(
+    source: Path = typer.Argument(..., help="Directory containing downloaded VTT subtitle files"),
+    channel_name: str = typer.Argument(..., help="Channel name for the rebuilt library"),
+    output: Path = typer.Option(".", "--output", "-o", help="Output directory"),
+    per_volume: int = typer.Option(TRANSCRIPTS_PER_VOLUME, "--per-volume", "-n", help="Transcripts per volume"),
+):
+    """Rebuild clean transcripts and RAG-ready volumes from local VTT files."""
+    source = Path(source).resolve()
+    output = Path(output).resolve()
+
+    if not source.exists() or not source.is_dir():
+        console.print(f"[red]Error:[/] VTT source directory not found: {source}")
+        raise typer.Exit(1)
+
+    paths = build_output_paths(output, channel_name)
+    project_dir = ensure_dir(paths['project'])
+    raw_dir = ensure_dir(paths['raw'])
+    clean_dir = ensure_dir(paths['clean'])
+    volumes_dir = ensure_dir(paths['volumes'])
+
+    vtt_files = list(source.glob("*.vtt"))
+    if not vtt_files:
+        console.print(f"[yellow]No VTT files found in {source}[/]")
+        raise typer.Exit(0)
+
+    for vtt_file in vtt_files:
+        shutil.copy2(vtt_file, raw_dir / vtt_file.name)
+
+    with console.status("[bold green]Processing transcripts..."):
+        transcripts = process_vtt_directory(raw_dir, channel_name)
+
+    if not transcripts:
+        console.print("\n[yellow]No transcripts to process.[/]")
+        raise typer.Exit(0)
+
+    with console.status("[bold green]Writing clean transcripts..."):
+        clean_files = create_clean_transcript_files(transcripts, clean_dir)
+
+    with console.status("[bold green]Creating volumes..."):
+        stats = create_volumes(
+            transcripts=transcripts,
+            output_dir=volumes_dir,
+            channel_name=channel_name,
+            transcripts_per_volume=per_volume,
+        )
+        stats['clean_transcripts'] = clean_files
+        write_manifest(project_dir, channel_name, stats)
+
+    console.print(f"  Raw subtitles: {len(vtt_files)}")
+    console.print(f"  Processed: {len(transcripts)} transcripts")
+    console.print(f"  Volumes: {len(stats['volumes'])}")
+    console.print(f"\n[bold green]Done![/] Output: {project_dir}")
 
 
 @app.command()
@@ -214,7 +291,11 @@ def status(
     channels = []
     for item in directory.iterdir():
         if item.is_dir():
-            volumes = list(item.glob("*_Vol*.txt"))
+            volumes_dir = item / "rag-volumes"
+            if volumes_dir.exists():
+                volumes = list(volumes_dir.glob("*_Vol*.txt"))
+            else:
+                volumes = list(item.glob("*_Vol*.txt"))
             manifest = item / "manifest.json"
             if volumes or manifest.exists():
                 channels.append({

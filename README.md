@@ -60,8 +60,11 @@ ytrag all "https://..." --lang es,en,pt
 # Custom output directory
 ytrag all "https://..." --output ./my-transcripts
 
-# Adjust transcripts per volume (default: 100)
+# Adjust transcripts per volume (default: 50)
 ytrag all "https://..." --per-volume 50
+
+# Rebuild outputs from an existing folder of .vtt subtitle files
+ytrag rebuild "./ChannelName" "Channel Name"
 
 # Slow down large channel downloads to avoid YouTube rate limits
 ytrag all "https://..." --sleep-interval 15 --max-sleep-interval 30
@@ -79,9 +82,12 @@ After running `ytrag all`, your directory will look like:
 
 ```
 ./
-└── ChannelName/
-    ├── ChannelName_Vol01.txt      # LLM-ready volume
-    ├── ChannelName_Vol02.txt
+└── ytrag-ChannelName/
+    ├── raw-subtitles/             # Downloaded .vtt subtitle files
+    ├── clean-transcripts/         # One cleaned .md transcript per video
+    ├── rag-volumes/               # NotebookLM/RAG-ready volumes only
+    │   ├── ChannelName_Vol01.txt
+    │   └── ChannelName_Vol02.txt
     ├── manifest.json              # Metadata
     └── .ytrag_archive             # Resume tracking
 ```
@@ -95,6 +101,7 @@ Each volume contains cleaned, consolidated transcripts ready for use with LLMs a
 - **Resume support**: Re-run to continue where you left off
 - **Clear progress**: Shows current/total videos and ETA while downloading large channels
 - **Accurate channel counts**: Channel root URLs automatically target the Videos tab
+- **NotebookLM-friendly volumes**: Smaller default volumes and a dedicated `rag-volumes` folder
 - **Smart deduplication**: Skips regional variants (en-US if en exists)
 - **Adaptive rate limiting**: Automatically handles YouTube rate limits
 - **Clean output**: No intermediate files, just the volumes you need
